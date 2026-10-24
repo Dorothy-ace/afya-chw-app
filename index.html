@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Afya CHW Offline-First Records App</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --bg: #f8fafc;
+        }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            margin: 0;
+            padding: 1rem;
+            color: #1e293b;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        /* Network Status Bar (Deliverable 1) */
+        #network-bar {
+            padding: 0.75rem;
+            text-align: center;
+            font-weight: bold;
+            color: white;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            transition: background 0.3s ease;
+        }
+        .online { background-color: var(--success); }
+        .offline { background-color: var(--danger); }
+
+        card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            display: block;
+            margin-bottom: 1.5rem;
+        }
+        h2, h3 { margin-top: 0; }
+        label { display: block; margin-top: 0.75rem; font-weight: 600; font-size: 0.9rem; }
+        input, select, textarea {
+            width: 100%;
+            padding: 0.6rem;
+            margin-top: 0.25rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 1rem;
+            width: 100%;
+        }
+        button:hover { opacity: 0.9; }
+        .queue-item {
+            background: #f1f5f9;
+            padding: 0.75rem;
+            border-left: 4px solid var(--danger);
+            margin-top: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Deliverable 1: Visual Network Status Bar -->
+    <div id="network-bar" class="online">ONLINE</div>
+
+    <!-- Deliverable 1: Mobile-Optimized Input Form -->
+    <card>
+        <h2>CHW Home Visit Form</h2>
+        <form id="chw-form">
+            <label>CHW ID *</label>
+            <input type="text" id="chw_id" value="CHW-KKG-04" required>
+
+            <label>Patient Full Name *</label>
+            <input type="text" id="patient_name" placeholder="e.g. Jane Namubiru" minlength="2" required>
+
+            <label>Village / Cluster Name *</label>
+            <input type="text" id="village_name" placeholder="e.g. Shibuye" required>
+
+            <label>Visit Type *</label>
+            <select id="visit_type" required>
+                <option value="Maternal">Maternal</option>
+                <option value="Child">Child</option>
+                <option value="General">General</option>
+            </select>
+
+            <label>Blood Pressure (SYS/DIA)</label>
+            <input type="text" id="vitals_bp" placeholder="120/80">
+
+            <label>Temperature (°C)</label>
+            <input type="number" step="0.1" min="35.0" max="43.0" id="vitals_temp" placeholder="37.2">
+
+            <label>Urgency Level *</label>
+            <select id="urgency_level" required>
+                <option value="Routine">Routine</option>
+                <option value="Urgent">Urgent</option>
+                <option value="Emergency">Emergency</option>
+            </select>
+
+            <label>Visit Notes</label>
+            <textarea id="visit_notes" placeholder="Optional notes..."></textarea>
+
+            <button type="submit">Save Visit (Offline-First)</button>
+        </form>
+    </card>
+
+    <!-- Deliverable 2: Pending Sync Queue View -->
+    <card>
+        <h3>Pending Sync Queue (<span id="queue-count">0</span>)</h3>
+        <button onclick="triggerSync()" style="background: var(--success); margin-top: 0;">Force Sync Queue</button>
+        <div id="queue-list" style="margin-top: 1rem;"></div>
+    </card>
+</div>
+
+<script>
+    // UUID generator utility for client-side local_id creation[cite: 2]
+    function generateUUID() {
+        return 'client-uuid-' + Math.random().toString(36.25).substr(2, 9);
+    }
+
+    // Update Network Status Bar UI
+    function updateNetworkStatus() {
+        const bar = document.getElementById('network-bar');
+        if (navigator.onLine) {
+            bar.textContent = 'ONLINE - Ready to Sync';
+            bar.className = 'online';
+            triggerSync(); // Auto-flush queue on reconnection[cite: 3]
+        } else {
+            bar.textContent = 'OFFLINE - Data saving locally';
+            bar.className = 'offline';
+        }
+    }
+
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
+
+    // Get queue from localStorage (Tier 2 persistence across app restarts)[cite: 1, 3]
+    function getQueue() {
+        return JSON.parse(localStorage.getItem('chw_sync_queue') || '[]');
+    }
+
+    function saveQueue(queue) {
+        localStorage.setItem('chw_sync_queue', JSON.stringify(queue));
+        renderQueue();
+    }
+
+    // Render pending queue items
+    function renderQueue() {
+        const queue = getQueue();
+        document.getElementById('queue-count').textContent = queue.length;
+        const listEl = document.getElementById('queue-list');
+        listEl.innerHTML = '';
+        if (queue.length === 0) {
+            listEl.innerHTML = '<p style="color: #64748b;">No pending records in queue.</p>';
+            return;
+        }
+        queue.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'queue-item';
+            div.innerHTML = `<strong>Patient:</strong> ${item.patient_name} (${item.visit_type})<br><small>ID: ${item.local_id} | Created: ${item.created_at_local}</small>`;
+            listEl.appendChild(div);
+        });
+    }
+
+    // Form submission handler (Zero Data Loss Guarantee)[cite: 3]
+    document.getElementById('chw-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+
+        const record = {
+            local_id: generateUUID(),
+            chw_id: document.getElementById('chw_id').value,
+            patient_name: document.getElementById('patient_name').value,
+            village_name: document.getElementById('village_name').value,
+            visit_type: document.getElementById('visit_type').value,
+            vitals_bp: document.getElementById('vitals_bp').value,
+            vitals_temp: parseFloat(document.getElementById('vitals_temp').value) || null,
+            urgency_level: document.getElementById('urgency_level').value,
+            visit_notes: document.getElementById('visit_notes').value,
+            created_at_local: new Date().toISOString(), // UTC ISO 8601[cite: 2]
+            sync_status: 'Pending'
+        };
+
+        const queue = getQueue();
+        queue.push(record);
+        saveQueue(queue);
+
+        alert('Record saved locally!');
+        document.getElementById('chw-form').reset();
+    });
+
+    // Network Synchronization Engine (Deliverable 3)[cite: 3]
+    async function triggerSync() {
+        if (!navigator.onLine) return;
+        const queue = getQueue();
+        if (queue.length === 0) return;
+
+        try {
+            const response = await fetch('/api/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(queue)
+            });
+
+            const result = await response.json();
+            if (response.ok && result.success) {
+                // Clear queue upon successful server confirmation
+                localStorage.removeItem('chw_sync_queue');
+                renderQueue();
+                console.log('Queue successfully flushed to server.');
+            }
+        } catch (err) {
+            console.error('Sync failed, network error or server offline:', err);
+        }
+    }
+
+    // Initial load checks
+    updateNetworkStatus();
+    renderQueue();
+</script>
+</body>
+</html>
